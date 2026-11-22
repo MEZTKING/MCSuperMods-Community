@@ -1,0 +1,78 @@
+name: Check mods
+
+# Checks every changed project under mods/ and examples/ with MCSuperMods' own checker on every
+# Minecraft version it supports, and that examples/ matches the examples of MCSuperMods main.
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: check-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    env:
+      # Only the checker's Node code is needed, not the app's desktop shell or browsers.
+      ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
+      PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: community
+          fetch-depth: 0
+      - uses: actions/checkout@v7
+        with:
+          repository: MEZTKING/MCSuperMods
+          ref: main
+          path: msm
+      - uses: pnpm/action-setup@v6
+        with:
+          package_json_file: msm/package.json
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: msm/.nvmrc
+          cache: pnpm
+          cache-dependency-path: msm/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+        working-directory: msm
+      - name: Find the changed projects
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          cd community
+          if [ "$EVENT" != "workflow_dispatch" ] && [ -n "$BASE" ] && git cat-file -e "$BASE^{commit}" 2>/dev/null; then
+            git diff --name-only "$BASE" HEAD > ../changed.txt
+          else
+            git ls-files > ../changed.txt
+          fi
+          node -e '
+            const { existsSync, readFileSync } = require("node:fs");
+            const folders = new Set();
+            for (const path of readFileSync("../changed.txt", "utf8").split("\n")) {
+              const parts = path.split("/");
+              if (parts[0] === "mods" && parts.length > 2 && parts[1] !== "_template") {
+                if (existsSync(`mods/${parts[1]}`)) folders.add(`community/mods/${parts[1]}`);
+              } else if (parts[0] === "examples") {
+                for (let end = parts.length - 1; end > 1; end -= 1) {
+                  const dir = parts.slice(0, end).join("/");
+                  if (existsSync(`${dir}/msm.project.json`)) { folders.add(`community/${dir}`); break; }
+                }
+              }
+            }
+            console.log([...folders].sort().join("\n"));
+          ' > ../projects.txt
+          echo "Projects to check:"; cat ../projects.txt
+      - name: Check the projects on every Minecraft version
+        run: |
+          if [ ! -s projects.txt ]; then echo "No project changed."; exit 0; fi
+          xargs -d '\n' node msm/tools/check-project/index.ts --target all < projects.txt
+      - name: Check that examples/ matches MCSuperMods main
+        run: node msm/tools/community-repo/sync.ts --repo community --check

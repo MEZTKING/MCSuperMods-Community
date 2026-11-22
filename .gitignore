@@ -1,0 +1,5 @@
+# The app's own files inside a project folder (typings, export records); not part of a shared mod.
+.msm/
+.DS_Store
+Thumbs.db
+node_modules/
